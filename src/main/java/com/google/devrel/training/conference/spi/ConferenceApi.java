@@ -29,10 +29,13 @@ import com.google.devrel.training.conference.Constants;
 import com.google.devrel.training.conference.domain.Announcement;
 import com.google.devrel.training.conference.domain.Conference;
 import com.google.devrel.training.conference.domain.Profile;
+import com.google.devrel.training.conference.domain.Session;
+import com.google.devrel.training.conference.domain.Session.SessionType;
 import com.google.devrel.training.conference.form.ConferenceForm;
 import com.google.devrel.training.conference.form.ConferenceQueryForm;
 import com.google.devrel.training.conference.form.ProfileForm;
 import com.google.devrel.training.conference.form.ProfileForm.TeeShirtSize;
+import com.google.devrel.training.conference.form.SessionForm;
 import com.googlecode.objectify.Key;
 import com.googlecode.objectify.Work;
 
@@ -545,5 +548,55 @@ public class ConferenceApi {
     	}
     	return null;
     }
- 
+    /**
+     * Given a conference, return all sessions
+     * 
+     * @param conference key
+     * @return all sessions belongs to this conference
+     */
+    public List<Session> getConferenceSessions(String websafeConferenceKey) {
+    	Key<Conference> key = Key.create(websafeConferenceKey);
+    	return ofy().load().type(Session.class).ancestor(key).list();
+    }
+    /**
+     * Given a conference, return all sessions of a specified type (eg lecture, keynote, workshop)
+     * 
+     * @param websafeConferenceKey
+     * @param typeOfSession
+     * @return all sessions of a specified type (eg lecture, keynote, workshop)
+     */
+    public List<Session> getConferenceSessionsByType(String websafeConferenceKey, SessionType typeOfSession) {
+    	Key<Conference> key = Key.create(websafeConferenceKey);
+    	return ofy().load().type(Session.class).ancestor(key).filter("type", typeOfSession).list();
+    }
+    /**
+     * Given a speaker, return all sessions given by this particular speaker, across all conferences
+     * 
+     * @param speaker
+     * @return  all sessions given by this particular speaker, across all conferences
+     */
+    public List<Session> getSessionsBySpeaker(String speaker) {
+    	Query<Session> query = ofy().load().type(Session.class).filter("speaker", speaker);
+    	return query.list();
+    }
+    /**
+     * open only to the organizer of the conference
+     * 
+     * @param SessionForm
+     * @param websafeConferenceKey
+     * @return created session
+     * @throws UnauthorizedException 
+     */
+    public Session createSession(final User user, SessionForm SessionForm, String websafeConferenceKey) throws UnauthorizedException {
+    	if (user == null) {
+            throw new UnauthorizedException("Authorization required");
+        }
+    	Key<Conference> conferenceKey = Key.create(websafeConferenceKey);
+    	final long conferenceId = conferenceKey.getId();
+    	final Key<Session> sessionKey = factory().allocateId(conferenceKey, Session.class);
+    	final long sessionId = sessionKey.getId();
+    	Session session = new Session(sessionId, conferenceId, SessionForm);
+    	ofy().save().entity(session).now();
+    	return session;
+    }
 }
