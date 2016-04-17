@@ -64,4 +64,23 @@
 			<role-name>admin</role-name>
 		</auth-constraint>
 	</security-constraint>
+	
+	<servlet>
+		<servlet-name>AddFeaturedSpeakerServlet</servlet-name>
+		<servlet-class>com.google.devrel.training.conference.servlet.AddFeaturedSpeakerServlet</servlet-class>
+	</servlet>
+	<servlet-mapping>
+		<servlet-name>AddFeaturedSpeakerServlet</servlet-name>
+		<url-pattern>/featured_speaker</url-pattern>
+	</servlet-mapping>
+	
+	<security-constraint>
+		<web-resource-collection>
+			<web-resource-name>session</web-resource-name>
+			<url-pattern>/featured_speaker/*</url-pattern>
+		</web-resource-collection>
+		<auth-constraint>
+			<role-name>admin</role-name>
+		</auth-constraint>
+	</security-constraint>
 </web-app>

@@ -30,12 +30,13 @@ import com.google.devrel.training.conference.domain.Announcement;
 import com.google.devrel.training.conference.domain.Conference;
 import com.google.devrel.training.conference.domain.Profile;
 import com.google.devrel.training.conference.domain.Session;
-import com.google.devrel.training.conference.domain.Session.SessionType;
+import com.google.devrel.training.conference.domain.Speaker;
 import com.google.devrel.training.conference.form.ConferenceForm;
 import com.google.devrel.training.conference.form.ConferenceQueryForm;
 import com.google.devrel.training.conference.form.ProfileForm;
 import com.google.devrel.training.conference.form.ProfileForm.TeeShirtSize;
 import com.google.devrel.training.conference.form.SessionForm;
+import com.google.devrel.training.conference.form.SessionForm.SessionType;
 import com.googlecode.objectify.Key;
 import com.googlecode.objectify.Work;
 
@@ -554,7 +555,12 @@ public class ConferenceApi {
      * @param conference key
      * @return all sessions belongs to this conference
      */
-    public List<Session> getConferenceSessions(String websafeConferenceKey) {
+    @ApiMethod(
+            name = "getConferenceSessions",
+            path = "getConferenceSessions",
+            httpMethod = HttpMethod.GET
+    )
+    public List<Session> getConferenceSessions(@Named("websafeConferenceKey") String websafeConferenceKey) {
     	Key<Conference> key = Key.create(websafeConferenceKey);
     	return ofy().load().type(Session.class).ancestor(key).list();
     }
@@ -565,7 +571,12 @@ public class ConferenceApi {
      * @param typeOfSession
      * @return all sessions of a specified type (eg lecture, keynote, workshop)
      */
-    public List<Session> getConferenceSessionsByType(String websafeConferenceKey, SessionType typeOfSession) {
+    @ApiMethod(
+            name = "getConferenceSessionsByType",
+            path = "getConferenceSessionsByType",
+            httpMethod = HttpMethod.GET
+    )
+    public List<Session> getConferenceSessionsByType(@Named("websafeConferenceKey") String websafeConferenceKey, @Named("sessionType") SessionType typeOfSession) {
     	Key<Conference> key = Key.create(websafeConferenceKey);
     	return ofy().load().type(Session.class).ancestor(key).filter("type", typeOfSession).list();
     }
@@ -575,7 +586,12 @@ public class ConferenceApi {
      * @param speaker
      * @return  all sessions given by this particular speaker, across all conferences
      */
-    public List<Session> getSessionsBySpeaker(String speaker) {
+    @ApiMethod(
+            name = "getSessionsBySpeaker",
+            path = "getSessionsBySpeaker",
+            httpMethod = HttpMethod.GET
+    )
+    public List<Session> getSessionsBySpeaker(@Named("speaker") String speaker) {
     	Query<Session> query = ofy().load().type(Session.class).filter("speaker", speaker);
     	return query.list();
     }
@@ -586,17 +602,207 @@ public class ConferenceApi {
      * @param websafeConferenceKey
      * @return created session
      * @throws UnauthorizedException 
+     * @throws NotFoundException 
      */
-    public Session createSession(final User user, SessionForm SessionForm, String websafeConferenceKey) throws UnauthorizedException {
+    @ApiMethod(
+            name = "createSession",
+            path = "createSession",
+            httpMethod = HttpMethod.POST
+    )
+    public Session createSession(final User user, final SessionForm SessionForm, @Named("websafeConferenceKey") final String websafeConferenceKey) throws UnauthorizedException, NotFoundException {
     	if (user == null) {
             throw new UnauthorizedException("Authorization required");
         }
-    	Key<Conference> conferenceKey = Key.create(websafeConferenceKey);
-    	final long conferenceId = conferenceKey.getId();
-    	final Key<Session> sessionKey = factory().allocateId(conferenceKey, Session.class);
-    	final long sessionId = sessionKey.getId();
-    	Session session = new Session(sessionId, conferenceId, SessionForm);
-    	ofy().save().entity(session).now();
+    	Session session = ofy().transact(new Work<Session>() {
+        	public Session run() {
+        		Key<Conference> conferenceKey = Key.create(websafeConferenceKey);
+            	final Key<Session> sessionKey = factory().allocateId(conferenceKey, Session.class);
+            	final long sessionId = sessionKey.getId();
+            	Session session = new Session(sessionId, websafeConferenceKey, SessionForm);
+            	Conference conference;
+				try {
+					conference = getConference(websafeConferenceKey);
+					ofy().save().entities(conference, session).now();
+	            	Queue queue = QueueFactory.getDefaultQueue();
+	                queue.add(ofy().getTransaction(), TaskOptions.Builder.withUrl("/featured_speaker").
+	               		    param("speaker", session.getSpeaker()).param("websafeConferenceKey", websafeConferenceKey));
+	            	
+				} catch (NotFoundException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+				return session;
+        	}
+    	});
     	return session;
+    	
+    }
+    
+    /**
+     * adds the session to the user's list of sessions they are interested in attending
+     * @param user
+     * @param websafeSessionKey
+     * @return
+     * @throws UnauthorizedException
+     * @throws NotFoundException 
+     * @throws ConflictException 
+     * @throws ForbiddenException 
+     */
+    @ApiMethod(
+            name = "addSessionToWishlist",
+            path = "session/{websafeSessionKey}/addSessionToWishlist",
+            httpMethod = HttpMethod.POST
+            
+    )
+    public WrappedBoolean addSessionToWishlist(final User user, @Named("websafeSessionKey") final String websafeSessionKey) throws UnauthorizedException, NotFoundException, ConflictException, ForbiddenException {
+    	if (user == null) {
+            throw new UnauthorizedException("Authorization required");
+        }
+    	WrappedBoolean result = ofy().transact(new Work<WrappedBoolean>() {
+        	public WrappedBoolean run() {
+        		Key<Session> sessionKey = Key.create(websafeSessionKey);
+        		Session session = ofy().load().key(sessionKey).now();
+        		if (session == null) {
+                    return new WrappedBoolean (false,
+                            "No session found with key: "
+                                    + websafeSessionKey);
+                }
+        		Profile profile = getProfileFromUser(user);
+        		if (profile.getSessionWishList().contains(websafeSessionKey)) {
+        			return new WrappedBoolean (false, "Already added");
+        		}
+        		else {
+        			profile.addToSessionWishList(websafeSessionKey);
+        			ofy().save().entity(profile);
+                    return new WrappedBoolean (true, "Added to wish list!");
+        		}
+        	}
+    	});
+    	if (!result.getResult()) {
+            if (result.getReason().contains("No session found with key")) {
+                throw new NotFoundException (result.getReason());
+            }
+            else if (result.getReason() == "Already added") {
+                throw new ConflictException("This session already in your wish list");
+            }
+            else {
+                throw new ForbiddenException("Unknown exception");
+            }
+        }
+    	return result;
+    }
+    /**
+     * query for all the sessions in a conference that the user is interested in
+     * @param user
+     * @param websafeConferenceKey
+     * @return all the sessions in a conference that the user is interested in
+     * @throws UnauthorizedException 
+     * @throws NotFoundException 
+     */
+    @ApiMethod(
+            name = "getSessionsInWishlist",
+            path = "session/{websafeConferenceKey}/getSessionsInWishlist",
+            httpMethod = HttpMethod.POST
+            
+    )
+    public Collection<Session> getSessionsInWishlist(final User user, @Named("websafeConferenceKey")String websafeConferenceKey) throws UnauthorizedException, NotFoundException {
+    	if (user == null) {
+            throw new UnauthorizedException("Authorization required");
+        }
+    	Profile profile = getProfileFromUser(user);
+    	if (profile == null) {
+            throw new NotFoundException("Profile doesn't exist.");
+        }
+    	List<String> websafeKeys = profile.getSessionWishList();
+    	List<Key<Session>> sessionKeys = new ArrayList<Key<Session>>();
+    	for (String str : websafeKeys) {
+    		Key<Session> sessionKey = Key.create(str);
+    		sessionKeys.add(sessionKey);
+    	}
+    	Collection<Session> wishlist = ofy().load().keys(sessionKeys).values();
+    	Collection<Session> result = new ArrayList<Session>();
+    	for (Session session : wishlist) {
+    		if (session.getWebSafeConferenceKey().equals(websafeConferenceKey)) {
+    			result.add(session);
+    		}
+    	}
+    	return result;
+    }
+    
+    /**
+     * removes the session from the user’s list of sessions they are interested in attending
+     * @param user
+     * @param websafeSessionKey
+     * @return
+     * @throws NotFoundException 
+     * @throws UnauthorizedException 
+     * @throws ConflictException 
+     * @throws ForbiddenException 
+     */
+    @ApiMethod(
+            name = "deleteSessionInWishlist",
+            path = "session/{websafeSessionKey}/deleteSessionInWishlist",
+            httpMethod = HttpMethod.DELETE
+            
+    )
+    public WrappedBoolean deleteSessionInWishlist(final User user, @Named("websafeSessionKey") final String websafeSessionKey) throws NotFoundException, UnauthorizedException, ConflictException, ForbiddenException {
+    	if (user == null) {
+            throw new UnauthorizedException("Authorization required");
+        }
+    	
+    	
+    	WrappedBoolean result = ofy().transact(new Work<WrappedBoolean>() {
+        	public WrappedBoolean run() {
+        		try {
+        			Profile profile = getProfileFromUser(user);
+        			if (profile == null) {
+        				return new WrappedBoolean(false, "Profile doesn't exist.");
+        	        }
+            		if (!profile.getSessionWishList().contains(websafeSessionKey)) {
+            			return new WrappedBoolean(false, "session is not added");
+            		}
+            		
+            		
+            		profile.removeFromSessionWishList(websafeSessionKey);
+            		ofy().save().entity(profile);
+            		return new WrappedBoolean(true, "session is removed");
+        		}
+        	
+        		catch (Exception e) {
+        			return new WrappedBoolean(false, "Unknown exception");
+        		}
+        		
+        	}
+    	});
+    	if (!result.getResult()) {
+    		if (result.getReason().contains("session is not added")) {
+                throw new NotFoundException (result.getReason());
+            }
+            else if (result.getReason() == "session is not added") {
+                throw new ConflictException("This session is not in your wish list");
+            }
+            else if (result.getReason() == "Profile doesn't exist.") {
+            	throw new NotFoundException("Profile doesn't exist.");
+            }
+            else {
+                throw new ForbiddenException("Unknown exception");
+            }
+    	}
+    	return result;
+    }
+   
+    /**
+     * 
+     * @return an Announcement object whose message property contains speaker and sessions
+     */
+    public Announcement getFeaturedSpeaker(@Named("speaker") final String speaker, @Named("websafeConferenceKey")final String websafeConferenceKey) {
+    	MemcacheService memcacheService =
+          	     MemcacheServiceFactory.getMemcacheService();
+    	Key<Conference> conferenceKey = Key.create(websafeConferenceKey);
+       	String message = (String) memcacheService.get(speaker + "_" + conferenceKey.getId());
+       	if (message != null) {
+       		return new Announcement(message);
+       	}
+       	return null;
     }
 }
